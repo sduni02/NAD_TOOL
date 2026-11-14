@@ -181,6 +181,80 @@
             </form>
         </div>
 
+        <!-- 2nd File: Candidate Master (APAAR ID & Aadhaar Card) Panel -->
+        <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4">
+            <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-slate-100 pb-4">
+                <div class="flex items-center space-x-3">
+                    <div class="w-10 h-10 rounded-xl bg-pink-50 text-pink-600 flex items-center justify-center text-lg border border-pink-200">
+                        <i class="fa-solid fa-id-card"></i>
+                    </div>
+                    <div>
+                        <div class="flex items-center space-x-2">
+                            <h3 class="text-base font-bold text-slate-900">2nd File: Candidate Master (APAAR ID & Aadhaar)</h3>
+                            <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold {{ $masterCount > 0 ? 'bg-pink-100 text-pink-800' : 'bg-slate-100 text-slate-500' }}">
+                                {{ $masterCount > 0 ? number_format($masterCount) . ' candidates loaded' : 'Not Loaded' }}
+                            </span>
+                        </div>
+                        <p class="text-xs text-slate-500">Provide APAAR IDs and Aadhaar cards from a secondary Excel/CSV to merge into the NAD export automatically.</p>
+                    </div>
+                </div>
+
+                @if($masterCount > 0)
+                <form action="{{ route('marksheets.clearCandidateMaster') }}" method="POST" onsubmit="return confirm('Remove the uploaded APAAR/Aadhaar master data?');">
+                    @csrf
+                    <button type="submit" class="px-3 py-1.5 rounded-xl text-xs font-semibold text-rose-700 bg-rose-50 border border-rose-200 hover:bg-rose-100 transition-colors">
+                        <i class="fa-solid fa-trash mr-1"></i> Remove 2nd File
+                    </button>
+                </form>
+                @endif
+            </div>
+
+            @if($masterCount > 0)
+            <div class="bg-pink-50/60 rounded-xl p-4 border border-pink-100 flex flex-col md:flex-row items-start md:items-center justify-between gap-3 text-xs">
+                <div class="space-y-1">
+                    <div class="font-bold text-pink-950 flex items-center">
+                        <i class="fa-solid fa-file-circle-check text-pink-600 mr-2 text-sm"></i>
+                        <span>File: {{ $masterFilename ?: 'Candidate_Master.xlsx' }}</span>
+                    </div>
+                    <div class="text-pink-800 text-[11px]">
+                        Available Columns: <span class="font-mono font-semibold">{{ implode(', ', $masterColumns) }}</span>
+                    </div>
+                </div>
+
+                <form action="{{ route('marksheets.setCandidateMasterKey') }}" method="POST" class="flex items-center space-x-2 w-full md:w-auto">
+                    @csrf
+                    <span class="text-pink-900 font-semibold whitespace-nowrap">Match Key:</span>
+                    <select name="match_col" class="text-xs border border-pink-300 rounded-xl px-2.5 py-1.5 bg-white text-slate-800 font-medium focus:outline-none focus:ring-2 focus:ring-pink-500">
+                        @foreach($masterColumns as $mc)
+                            <option value="{{ $mc }}" {{ $masterKeyCol === $mc ? 'selected' : '' }}>
+                                {{ $mc }} {{ $masterKeyCol === $mc ? '(Current)' : '' }}
+                            </option>
+                        @endforeach
+                    </select>
+                    <button type="submit" class="px-2.5 py-1.5 text-xs font-bold bg-pink-600 hover:bg-pink-700 text-white rounded-xl transition-colors">
+                        Update
+                    </button>
+                </form>
+            </div>
+            @else
+            <!-- Upload Candidate Master Form -->
+            <form action="{{ route('marksheets.uploadCandidateMaster') }}" method="POST" enctype="multipart/form-data">
+                @csrf
+                <div class="grid grid-cols-1 sm:grid-cols-4 gap-4 items-center">
+                    <div class="sm:col-span-3">
+                        <input type="file" name="master_file" accept=".xlsx, .xls, .csv, .txt" required class="block w-full text-xs text-slate-500 file:mr-3 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-pink-50 file:text-pink-700 hover:file:bg-pink-100 border border-slate-200 rounded-xl p-1 bg-slate-50">
+                    </div>
+                    <div>
+                        <button type="submit" class="w-full flex items-center justify-center px-4 py-2.5 rounded-xl font-bold text-xs text-white bg-pink-600 hover:bg-pink-700 shadow-sm transition-all">
+                            <i class="fa-solid fa-cloud-arrow-up mr-2"></i>
+                            Upload 2nd File
+                        </button>
+                    </div>
+                </div>
+            </form>
+            @endif
+        </div>
+
         @if($isTrSheet && !empty($availableTrSemesters))
         <!-- TR Sheet Semester Switcher Panel -->
         <div class="bg-gradient-to-r from-purple-900 to-indigo-900 text-white rounded-2xl p-5 shadow-lg space-y-4">

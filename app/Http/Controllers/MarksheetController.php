@@ -53,6 +53,13 @@ class MarksheetController extends Controller
 
         $records = $query->orderBy('id', 'asc')->paginate(20)->withQueryString();
 
+        // Candidate Master (APAAR / Aadhaar 2nd File)
+        $masterCount = \App\Models\CandidateMasterRecord::count();
+        $masterColumnsJson = DB::table('candidate_master_metadata')->where('key', 'columns')->value('value');
+        $masterColumns = $masterColumnsJson ? json_decode($masterColumnsJson, true) : [];
+        $masterKeyCol = DB::table('candidate_master_metadata')->where('key', 'match_key_column')->value('value');
+        $masterFilename = DB::table('candidate_master_metadata')->where('key', 'original_filename')->value('value');
+
         return view('marksheets.index', compact(
             'totalRecords',
             'totalStudents',
@@ -64,7 +71,11 @@ class MarksheetController extends Controller
             'activeTrSemester',
             'availableTrSemesters',
             'trCourse',
-            'trSession'
+            'trSession',
+            'masterCount',
+            'masterColumns',
+            'masterKeyCol',
+            'masterFilename'
         ));
     }
 
@@ -270,6 +281,147 @@ class MarksheetController extends Controller
         } catch (\Throwable $e) {
             return back()->with('error', 'Failed to clear database: ' . $e->getMessage());
         }
+    }
+
+    /**
+     * Upload Candidate Master (2nd File containing APAAR ID, Aadhaar, etc.)
+     */
+    public function uploadCandidateMaster(Request $request)
+    {
+        $request->validate([
+            'master_file' => 'required|file|max:51200',
+        ]);
+
+        $file = $request->file('master_file');
+        $ext = strtolower($file->getClientOriginalExtension());
+
+        if (!in_array($ext, ['csv', 'txt', 'xlsx', 'xls'])) {
+            return back()->with('error', 'Please upload a CSV or Excel (.xlsx, .xls) file for Candidate Master.');
+        }
+
+        try {
+            DB::beginTransaction();
+
+            \App\Models\CandidateMasterRecord::truncate();
+            DB::table('candidate_master_metadata')->truncate();
+
+            $filePath = $file->getRealPath();
+            $rows = [];
+
+            if (in_array($ext, ['csv', 'txt'])) {
+                $handle = fopen($filePath, 'r');
+                $bom = fread($handle, 3);
+                if ($bom !== "\xEF\xBB\xBF") rewind($handle);
+                while (($data = fgetcsv($handle)) !== false) {
+                    $rows[] = $data;
+                }
+                fclose($handle);
+            } else {
+                $spreadsheet = IOFactory::load($filePath);
+                $rows = $spreadsheet->getActiveSheet()->toArray(null, true, true, false);
+            }
+
+            if (empty($rows)) {
+                throw new \Exception('Candidate Master file is empty.');
+            }
+
+            $rawHeaders = array_shift($rows);
+            $columns = $this->sanitizeHeaders($rawHeaders);
+            $matchKeyCol = $this->detectStudentIdColumn($columns);
+
+            $batch = [];
+            $now = now();
+            foreach ($rows as $row) {
+                if (empty(array_filter($row, fn($val) => $val !== null && trim((string)$val) !== ''))) {
+                    continue;
+                }
+
+                $rowData = [];
+                foreach ($columns as $idx => $colName) {
+                    $rowData[$colName] = isset($row[$idx]) ? trim((string)$row[$idx]) : '';
+                }
+
+                $matchKey = ($matchKeyCol && isset($rowData[$matchKeyCol]) && $rowData[$matchKeyCol] !== '')
+                    ? trim((string)$rowData[$matchKeyCol])
+                    : null;
+
+                $batch[] = [
+                    'match_key' => $matchKey,
+                    'row_data' => json_encode($rowData, JSON_UNESCAPED_UNICODE),
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ];
+
+                if (count($batch) >= 500) {
+                    \App\Models\CandidateMasterRecord::insert($batch);
+                    $batch = [];
+                }
+            }
+
+            if (!empty($batch)) {
+                \App\Models\CandidateMasterRecord::insert($batch);
+            }
+
+            $totalCount = \App\Models\CandidateMasterRecord::count();
+
+            DB::table('candidate_master_metadata')->insert([
+                ['key' => 'columns', 'value' => json_encode($columns, JSON_UNESCAPED_UNICODE), 'created_at' => $now, 'updated_at' => $now],
+                ['key' => 'match_key_column', 'value' => $matchKeyCol, 'created_at' => $now, 'updated_at' => $now],
+                ['key' => 'original_filename', 'value' => $file->getClientOriginalName(), 'created_at' => $now, 'updated_at' => $now],
+                ['key' => 'total_count', 'value' => (string)$totalCount, 'created_at' => $now, 'updated_at' => $now],
+            ]);
+
+            DB::commit();
+
+            return redirect()->route('marksheets.index')
+                ->with('success', "Candidate Master uploaded! Loaded {$totalCount} candidates with " . count($columns) . " columns (Match Key: '{$matchKeyCol}').");
+        } catch (\Throwable $e) {
+            DB::rollBack();
+            return back()->with('error', 'Failed to upload Candidate Master: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Clear Candidate Master (2nd File)
+     */
+    public function clearCandidateMaster()
+    {
+        try {
+            \App\Models\CandidateMasterRecord::truncate();
+            DB::table('candidate_master_metadata')->truncate();
+            session()->forget(['mapping_config']);
+
+            return redirect()->route('marksheets.index')
+                ->with('success', 'Candidate Master (APAAR / Aadhaar file) cleared successfully.');
+        } catch (\Throwable $e) {
+            return back()->with('error', 'Failed to clear Candidate Master: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Set match key column for Candidate Master
+     */
+    public function setCandidateMasterKey(Request $request)
+    {
+        $col = $request->input('match_col');
+        if (!$col) {
+            return back()->with('error', 'Please select a valid column.');
+        }
+
+        DB::table('candidate_master_metadata')->updateOrInsert(
+            ['key' => 'match_key_column'],
+            ['value' => $col, 'updated_at' => now()]
+        );
+
+        $records = \App\Models\CandidateMasterRecord::all();
+        foreach ($records as $rec) {
+            $data = $rec->row_data;
+            $val = isset($data[$col]) ? trim((string)$data[$col]) : null;
+            $rec->match_key = ($val === '' ? null : $val);
+            $rec->save();
+        }
+
+        return back()->with('success', "Updated Candidate Master match key to '{$col}'.");
     }
 
     /**

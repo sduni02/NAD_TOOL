@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\ReferenceRecord;
+use App\Models\CandidateMasterRecord;
 use App\Models\MappingPreset;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -43,6 +44,13 @@ class MappingController extends Controller
         $refColumns = $columnsJson ? json_decode($columnsJson, true) : [];
         $studentIdCol = DB::table('reference_metadata')->where('key', 'student_id_column')->value('value');
 
+        // Candidate Master (2nd File: APAAR / Aadhaar)
+        $masterCount = CandidateMasterRecord::count();
+        $masterColumnsJson = DB::table('candidate_master_metadata')->where('key', 'columns')->value('value');
+        $masterColumns = $masterColumnsJson ? json_decode($masterColumnsJson, true) : [];
+        $masterKeyCol = DB::table('candidate_master_metadata')->where('key', 'match_key_column')->value('value');
+        $masterFilename = DB::table('candidate_master_metadata')->where('key', 'original_filename')->value('value');
+
         // Find max subjects any single student has
         $maxSubjects = 4;
         if ($totalStudents > 0) {
@@ -61,12 +69,12 @@ class MappingController extends Controller
         $mappingConfig = session('mapping_config', []);
 
         // If no mapping config exists yet or columns changed, run auto-matching
-        if (empty($mappingConfig) && !empty($refColumns)) {
-            $mappingConfig = $this->autoMatchColumns($headers, $refColumns);
+        if (empty($mappingConfig) && (!empty($refColumns) || !empty($masterColumns))) {
+            $mappingConfig = $this->autoMatchColumns($headers, $refColumns, $masterColumns);
             session(['mapping_config' => $mappingConfig]);
         }
 
-        $availableSources = $this->getAvailableSourceFields($refColumns, $maxSubjects);
+        $availableSources = $this->getAvailableSourceFields($refColumns, $maxSubjects, $masterColumns);
         $presets = MappingPreset::orderBy('name')->get();
 
         return view('mapping.index', compact(
@@ -78,7 +86,11 @@ class MappingController extends Controller
             'availableSources',
             'presets',
             'refColumns',
-            'studentIdCol'
+            'studentIdCol',
+            'masterCount',
+            'masterColumns',
+            'masterKeyCol',
+            'masterFilename'
         ));
     }
 
@@ -99,9 +111,7 @@ class MappingController extends Controller
             if (in_array($ext, ['csv', 'txt'])) {
                 $handle = fopen($file->getRealPath(), 'r');
                 $bom = fread($handle, 3);
-                if ($bom !== "\xEF\xBB\xBF") {
-                    rewind($handle);
-                }
+                if ($bom !== "\xEF\xBB\xBF") rewind($handle);
                 $firstRow = fgetcsv($handle);
                 fclose($handle);
                 if ($firstRow) {
@@ -127,7 +137,10 @@ class MappingController extends Controller
 
             $columnsJson = DB::table('reference_metadata')->where('key', 'columns')->value('value');
             $refColumns = $columnsJson ? json_decode($columnsJson, true) : [];
-            session(['mapping_config' => $this->autoMatchColumns($headers, $refColumns)]);
+            $masterColumnsJson = DB::table('candidate_master_metadata')->where('key', 'columns')->value('value');
+            $masterColumns = $masterColumnsJson ? json_decode($masterColumnsJson, true) : [];
+
+            session(['mapping_config' => $this->autoMatchColumns($headers, $refColumns, $masterColumns)]);
 
             return redirect()->route('mapping.index')
                 ->with('success', 'Loaded ' . count($headers) . ' columns from template! Smart auto-mapping applied.');
@@ -151,7 +164,10 @@ class MappingController extends Controller
         session(['target_headers' => $headers]);
         $columnsJson = DB::table('reference_metadata')->where('key', 'columns')->value('value');
         $refColumns = $columnsJson ? json_decode($columnsJson, true) : [];
-        session(['mapping_config' => $this->autoMatchColumns($headers, $refColumns)]);
+        $masterColumnsJson = DB::table('candidate_master_metadata')->where('key', 'columns')->value('value');
+        $masterColumns = $masterColumnsJson ? json_decode($masterColumnsJson, true) : [];
+
+        session(['mapping_config' => $this->autoMatchColumns($headers, $refColumns, $masterColumns)]);
 
         return redirect()->route('mapping.index')
             ->with('success', "Loaded default NAD template configured with {$expandCount} subject(s).");
@@ -172,7 +188,10 @@ class MappingController extends Controller
 
         $columnsJson = DB::table('reference_metadata')->where('key', 'columns')->value('value');
         $refColumns = $columnsJson ? json_decode($columnsJson, true) : [];
-        session(['mapping_config' => $this->autoMatchColumns($headers, $refColumns)]);
+        $masterColumnsJson = DB::table('candidate_master_metadata')->where('key', 'columns')->value('value');
+        $masterColumns = $masterColumnsJson ? json_decode($masterColumnsJson, true) : [];
+
+        session(['mapping_config' => $this->autoMatchColumns($headers, $refColumns, $masterColumns)]);
 
         return redirect()->route('mapping.index')
             ->with('success', "Template expanded to support up to {$count} subjects per student.");
@@ -253,10 +272,12 @@ class MappingController extends Controller
             ->limit(5)
             ->pluck('student_key');
 
+        $masterLookup = $this->buildCandidateMasterLookup();
+
         $rows = [];
         foreach ($studentKeys as $key) {
             $studentRecords = ReferenceRecord::where('student_key', $key)->orderBy('id', 'asc')->get();
-            $rows[] = $this->transformStudentToOneRow($studentRecords, $headers, $config);
+            $rows[] = $this->transformStudentToOneRow($studentRecords, $headers, $config, $masterLookup);
         }
 
         return response()->json([
@@ -295,21 +316,23 @@ class MappingController extends Controller
             return back()->with('error', 'No student records in database to export. Please upload reference data first.');
         }
 
+        $masterLookup = $this->buildCandidateMasterLookup();
+
         if ($format === 'xlsx') {
-            return $this->exportExcel($headers, $allKeys, $config);
+            return $this->exportExcel($headers, $allKeys, $config, $masterLookup);
         }
 
-        return $this->exportCsvStream($headers, $allKeys, $config);
+        return $this->exportCsvStream($headers, $allKeys, $config, $masterLookup);
     }
 
     /**
-     * Stream CSV download for unlimited dynamic records.
+     * Stream CSV download for unlimited dynamic records with candidate master join.
      */
-    private function exportCsvStream(array $headers, $studentKeys, array $config)
+    private function exportCsvStream(array $headers, $studentKeys, array $config, array $masterLookup)
     {
         $filename = 'NAD_Export_' . date('Ymd_His') . '.csv';
 
-        $callback = function () use ($headers, $studentKeys, $config) {
+        $callback = function () use ($headers, $studentKeys, $config, $masterLookup) {
             $file = fopen('php://output', 'w');
             fputs($file, "\xEF\xBB\xBF");
             fputcsv($file, $headers);
@@ -323,7 +346,7 @@ class MappingController extends Controller
                 foreach ($keyChunk as $key) {
                     if (isset($studentsData[$key])) {
                         $studentRecords = $studentsData[$key];
-                        $row = $this->transformStudentToOneRow($studentRecords, $headers, $config);
+                        $row = $this->transformStudentToOneRow($studentRecords, $headers, $config, $masterLookup);
                         fputcsv($file, $row);
                     }
                 }
@@ -339,9 +362,9 @@ class MappingController extends Controller
     }
 
     /**
-     * Generate Excel .xlsx download for dynamic records.
+     * Generate Excel .xlsx download with candidate master join.
      */
-    private function exportExcel(array $headers, $studentKeys, array $config)
+    private function exportExcel(array $headers, $studentKeys, array $config, array $masterLookup)
     {
         $spreadsheet = new Spreadsheet();
         $sheet = $spreadsheet->getActiveSheet();
@@ -359,7 +382,7 @@ class MappingController extends Controller
             foreach ($keyChunk as $key) {
                 if (isset($studentsData[$key])) {
                     $studentRecords = $studentsData[$key];
-                    $rowsBatch[] = $this->transformStudentToOneRow($studentRecords, $headers, $config);
+                    $rowsBatch[] = $this->transformStudentToOneRow($studentRecords, $headers, $config, $masterLookup);
                 }
             }
 
@@ -380,9 +403,9 @@ class MappingController extends Controller
     }
 
     /**
-     * Flatten a student's multiple subject records into one single output row.
+     * Flatten a student's multiple subject records into one single output row with Candidate Master lookup.
      */
-    private function transformStudentToOneRow($records, array $headers, array $config): array
+    private function transformStudentToOneRow($records, array $headers, array $config, array $masterLookup = []): array
     {
         $primaryRec = $records->first();
         if (!$primaryRec) {
@@ -401,7 +424,6 @@ class MappingController extends Controller
         foreach ($records as $rec) {
             $d = $rec->row_data ?? [];
             
-            // Search for total / marks fields dynamically
             $mTot = $this->findNumericValueInRow($d, ['total_marks', 'tot_marks', 'max_marks', 'tot_max']);
             $mObt = $this->findNumericValueInRow($d, ['marks_obtained', 'tot_obt', 'marks', 'total_obtained']);
             $cVal = $this->findNumericValueInRow($d, ['subject_credit', 'credit', 'credits']);
@@ -463,12 +485,25 @@ class MappingController extends Controller
             } elseif ($src === 'agg_subject_count') {
                 $val = (string)$records->count();
             } elseif (str_starts_with($src, 'ref:')) {
-                // Direct column from reference file (student-level)
+                // Direct column from primary reference file
                 $colName = substr($src, 4);
                 $val = (string)($primaryData[$colName] ?? '');
+            } elseif (str_starts_with($src, 'master:')) {
+                // Candidate Master 2nd file (APAAR, Aadhaar, etc.)
+                $colName = substr($src, 7);
+                $sKey = strtolower(trim((string)($primaryRec->student_key ?? '')));
+                $sRoll = strtolower(trim((string)($primaryData['Roll_No'] ?? $primaryData['roll'] ?? '')));
+                $sReg = strtolower(trim((string)($primaryData['Reg_No'] ?? $primaryData['reg'] ?? '')));
+                $sName = strtolower(trim((string)($primaryData['Student_Name'] ?? $primaryData['cname'] ?? '')));
+
+                $mRow = $masterLookup[$sKey]
+                    ?? ($masterLookup[$sRoll]
+                    ?? ($masterLookup[$sReg]
+                    ?? ($masterLookup[$sName] ?? [])));
+
+                $val = (string)($mRow[$colName] ?? '');
             } elseif (str_starts_with($src, 'sub_')) {
                 // Dynamic subject field e.g. sub_1:subject_code
-                // Format: sub_{index}:{ref_column_name}
                 if (preg_match('/^sub_(\d+):(.*)$/', $src, $m)) {
                     $subIdx = ((int)$m[1]) - 1;
                     $refCol = $m[2];
@@ -478,7 +513,6 @@ class MappingController extends Controller
                     }
                 }
             } elseif (str_starts_with($src, 'agg_sum:')) {
-                // Sum a specific reference column across all student's rows
                 $refCol = substr($src, 8);
                 $sum = 0;
                 foreach ($records as $r) {
@@ -486,7 +520,6 @@ class MappingController extends Controller
                 }
                 $val = (string)$sum;
             } else {
-                // Fallback direct key match
                 $val = (string)($primaryData[$src] ?? '');
             }
 
@@ -494,6 +527,29 @@ class MappingController extends Controller
         }
 
         return $row;
+    }
+
+    /**
+     * Build Candidate Master lookup dictionary for fast O(1) joins.
+     */
+    private function buildCandidateMasterLookup(): array
+    {
+        $records = CandidateMasterRecord::all();
+        $lookup = [];
+
+        foreach ($records as $r) {
+            $data = $r->row_data ?? [];
+            if ($r->match_key) {
+                $lookup[strtolower(trim($r->match_key))] = $data;
+            }
+            foreach ($data as $k => $v) {
+                if (preg_match('/^(roll|rroll|reg|regn|student_?id|enrol)/i', $k) && !empty($v)) {
+                    $lookup[strtolower(trim((string)$v))] = $data;
+                }
+            }
+        }
+
+        return $lookup;
     }
 
     /**
@@ -527,9 +583,9 @@ class MappingController extends Controller
     }
 
     /**
-     * Generate source options using the REAL columns in uploaded reference file.
+     * Generate source options including Candidate Master columns.
      */
-    private function getAvailableSourceFields(array $refColumns, int $maxSubjects): array
+    private function getAvailableSourceFields(array $refColumns, int $maxSubjects, array $masterColumns = []): array
     {
         $options = [];
 
@@ -537,12 +593,21 @@ class MappingController extends Controller
         if (!empty($refColumns)) {
             $studentCols = [];
             foreach ($refColumns as $col) {
-                $studentCols["ref:{$col}"] = "{$col} (from Ref File)";
+                $studentCols["ref:{$col}"] = "{$col} (from Reference File)";
             }
             $options['Reference File Columns (Student Fields)'] = $studentCols;
         }
 
-        // 2. Computed Totals
+        // 2. Candidate Master (2nd File: APAAR / Aadhaar)
+        if (!empty($masterColumns)) {
+            $masterCols = [];
+            foreach ($masterColumns as $col) {
+                $masterCols["master:{$col}"] = "{$col} (from 2nd File: APAAR / Aadhaar)";
+            }
+            $options['Candidate Master Fields (2nd File: APAAR / Aadhaar)'] = $masterCols;
+        }
+
+        // 3. Computed Totals
         $options['Calculated Student Totals & Result'] = [
             'agg_tot_marks' => 'Total Max Marks (SUM across subjects)',
             'agg_marks_obtained' => 'Total Marks Obtained (SUM across subjects)',
@@ -555,7 +620,7 @@ class MappingController extends Controller
             'agg_subject_count' => 'Number of Subjects for Student',
         ];
 
-        // 3. Subject-Specific Fields (Sub 1..N)
+        // 4. Subject-Specific Fields (Sub 1..N)
         if (!empty($refColumns)) {
             for ($i = 1; $i <= $maxSubjects; $i++) {
                 $subOpts = [];
@@ -566,7 +631,7 @@ class MappingController extends Controller
             }
         }
 
-        // 4. Special
+        // 5. Special
         $options['Special / Custom'] = [
             'static' => 'Fixed Static Text (Enter custom value)',
             'empty' => 'Empty / Blank Cell',
@@ -576,9 +641,9 @@ class MappingController extends Controller
     }
 
     /**
-     * Smart Auto-Match: intelligently pairs target headers with reference columns.
+     * Smart Auto-Match: pairs target headers with reference and candidate master columns.
      */
-    private function autoMatchColumns(array $headers, array $refColumns): array
+    private function autoMatchColumns(array $headers, array $refColumns, array $masterColumns = []): array
     {
         $mapping = [];
         $lowerRefCols = [];
@@ -587,15 +652,39 @@ class MappingController extends Controller
             $lowerRefCols[$clean] = $col;
         }
 
+        $lowerMasterCols = [];
+        foreach ($masterColumns as $col) {
+            $clean = strtolower(preg_replace('/[^a-z0-9]/', '', $col));
+            $lowerMasterCols[$clean] = $col;
+        }
+
         foreach ($headers as $col) {
             $clean = strtoupper(trim($col));
             $cleanKey = strtolower(preg_replace('/[^a-z0-9]/', '', $col));
             $source = 'empty';
             $static = '';
 
+            // Check if exact match in Candidate Master first for APAAR and Aadhaar
+            if (in_array($clean, ['ABC_ACCOUNT_ID', 'APAAR_ID', 'APAAR', 'ABC_ID'])) {
+                $matchedMaster = $this->findRefColName($lowerMasterCols, ['apaarid', 'apaar', 'abcaccountid', 'abcid', 'accountid', 'abc']);
+                if ($matchedMaster) {
+                    $source = "master:" . $matchedMaster;
+                }
+            } elseif (in_array($clean, ['AADHAAR_NAME', 'AADHAAR_NO', 'AADHAR_NO', 'AADHAAR', 'AADHAR'])) {
+                $matchedMaster = $this->findRefColName($lowerMasterCols, ['aadhaarno', 'aadharno', 'aadhaarname', 'aadharname', 'aadhaar', 'aadhar', 'cardno']);
+                if ($matchedMaster) {
+                    $source = "master:" . $matchedMaster;
+                }
+            } elseif ($clean === 'GENDER' && isset($lowerMasterCols['gender'])) {
+                $source = "master:" . $lowerMasterCols['gender'];
+            }
             // Check if exact or close match exists in reference columns
-            if (isset($lowerRefCols[$cleanKey])) {
+            elseif (isset($lowerRefCols[$cleanKey])) {
                 $source = "ref:" . $lowerRefCols[$cleanKey];
+            }
+            // Check if exact or close match exists in candidate master
+            elseif (isset($lowerMasterCols[$cleanKey])) {
+                $source = "master:" . $lowerMasterCols[$cleanKey];
             }
             // TR Sheet direct columns match
             elseif (in_array($clean, ['TOT', 'GRAND_TOT_MRKS']) && isset($lowerRefCols['grandtotal'])) {
@@ -654,7 +743,6 @@ class MappingController extends Controller
                 $subIdx = $matches[1];
                 $subSuffix = $matches[2];
 
-                // Check if direct TR sheet column exists in reference table
                 $trColKey = match ($subSuffix) {
                     '', '_CODE' => "sub{$subIdx}code",
                     'NM', '_NAME' => "sub{$subIdx}name",

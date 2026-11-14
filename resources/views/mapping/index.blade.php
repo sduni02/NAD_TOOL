@@ -297,6 +297,8 @@
                                             <span class="inline-block px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-100 text-slate-400">Blank</span>
                                         @elseif($currSrc === 'static')
                                             <span class="inline-block px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-800 font-mono">Static</span>
+                                        @elseif(str_starts_with($currSrc, 'master:'))
+                                            <span class="inline-block px-2 py-0.5 rounded text-[10px] font-semibold bg-pink-100 text-pink-800 font-mono">APAAR/Aadhaar</span>
                                         @elseif(str_starts_with($currSrc, 'sub_'))
                                             <span class="inline-block px-2 py-0.5 rounded text-[10px] font-semibold bg-purple-100 text-purple-800 font-mono">Subject</span>
                                         @elseif(str_starts_with($currSrc, 'agg_'))
@@ -449,6 +451,8 @@
                 staticInput.classList.add('opacity-40', 'bg-slate-50');
                 if (val === 'empty') {
                     badge.innerHTML = '<span class="inline-block px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-100 text-slate-400">Blank</span>';
+                } else if (val.startsWith('master:')) {
+                    badge.innerHTML = '<span class="inline-block px-2 py-0.5 rounded text-[10px] font-semibold bg-pink-100 text-pink-800 font-mono">APAAR/Aadhaar</span>';
                 } else if (val.startsWith('sub_')) {
                     badge.innerHTML = '<span class="inline-block px-2 py-0.5 rounded text-[10px] font-semibold bg-purple-100 text-purple-800 font-mono">Subject</span>';
                 } else if (val.startsWith('agg_')) {
