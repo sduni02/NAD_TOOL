@@ -9,7 +9,6 @@ Route::get('/', [MarksheetController::class, 'index'])->name('marksheets.index')
 Route::post('/upload', [MarksheetController::class, 'upload'])->name('marksheets.upload');
 Route::post('/refresh', [MarksheetController::class, 'refresh'])->name('marksheets.refresh');
 Route::post('/set-student-column', [MarksheetController::class, 'setStudentColumn'])->name('marksheets.setStudentColumn');
-Route::post('/switch-tr-semester', [MarksheetController::class, 'switchTrSemester'])->name('marksheets.switchTrSemester');
 Route::post('/upload-candidate-master', [MarksheetController::class, 'uploadCandidateMaster'])->name('marksheets.uploadCandidateMaster');
 Route::post('/clear-candidate-master', [MarksheetController::class, 'clearCandidateMaster'])->name('marksheets.clearCandidateMaster');
 Route::post('/set-candidate-master-key', [MarksheetController::class, 'setCandidateMasterKey'])->name('marksheets.setCandidateMasterKey');
