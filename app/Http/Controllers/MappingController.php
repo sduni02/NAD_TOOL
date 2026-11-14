@@ -597,6 +597,20 @@ class MappingController extends Controller
             if (isset($lowerRefCols[$cleanKey])) {
                 $source = "ref:" . $lowerRefCols[$cleanKey];
             }
+            // TR Sheet direct columns match
+            elseif (in_array($clean, ['TOT', 'GRAND_TOT_MRKS']) && isset($lowerRefCols['grandtotal'])) {
+                $source = 'ref:' . $lowerRefCols['grandtotal'];
+            } elseif (in_array($clean, ['PERCENT', 'PERCENTAGE']) && isset($lowerRefCols['percentage'])) {
+                $source = 'ref:' . $lowerRefCols['percentage'];
+            } elseif (in_array($clean, ['RESULT']) && isset($lowerRefCols['result'])) {
+                $source = 'ref:' . $lowerRefCols['result'];
+            } elseif (in_array($clean, ['SGPA', 'CGPA']) && isset($lowerRefCols['sgpa'])) {
+                $source = 'ref:' . $lowerRefCols['sgpa'];
+            } elseif (in_array($clean, ['TOT_CREDIT_POINTS', 'GRAND_TOT_CREDIT_POINTS']) && isset($lowerRefCols['totalcreditpoints'])) {
+                $source = 'ref:' . $lowerRefCols['totalcreditpoints'];
+            } elseif (in_array($clean, ['COURSE_NAME']) && isset($lowerRefCols['course'])) {
+                $source = 'ref:' . $lowerRefCols['course'];
+            }
             // Computed fields
             elseif (in_array($clean, ['TOT_MRKS', 'GRAND_TOT_MAX'])) {
                 $source = 'agg_tot_marks';
@@ -617,11 +631,11 @@ class MappingController extends Controller
             }
             // Standard Student Field Aliases
             elseif (in_array($clean, ['REGN_NO', 'REG_NO', 'REG', 'REGNO', 'REGISTRATION_NO'])) {
-                $source = $this->matchFirstRefCol($lowerRefCols, ['reg', 'regno', 'regnno', 'registrationno']);
+                $source = $this->matchFirstRefCol($lowerRefCols, ['regno', 'reg', 'regnno', 'registrationno']);
             } elseif (in_array($clean, ['RROLL', 'ROLL', 'ROLL_NO', 'ROLLNO', 'STUDENT_ROLL'])) {
-                $source = $this->matchFirstRefCol($lowerRefCols, ['roll', 'rroll', 'rollno', 'studentroll']);
+                $source = $this->matchFirstRefCol($lowerRefCols, ['rollno', 'roll', 'rroll', 'studentroll']);
             } elseif (in_array($clean, ['CNAME', 'NAME', 'STUDENT_NAME', 'CANDIDATE_NAME', 'AADHAAR_NAME'])) {
-                $source = $this->matchFirstRefCol($lowerRefCols, ['cname', 'name', 'studentname', 'candidatename']);
+                $source = $this->matchFirstRefCol($lowerRefCols, ['studentname', 'cname', 'name', 'candidatename']);
             } elseif (in_array($clean, ['DOB', 'DATE_OF_BIRTH', 'BIRTH_DATE'])) {
                 $source = $this->matchFirstRefCol($lowerRefCols, ['dateofbirth', 'dob', 'birthdate']);
             } elseif (in_array($clean, ['FNAME', 'FATHER_NAME', 'FATHERS_NAME'])) {
@@ -629,7 +643,7 @@ class MappingController extends Controller
             } elseif (in_array($clean, ['MNAME', 'MOTHER_NAME', 'MOTHERS_NAME'])) {
                 $source = $this->matchFirstRefCol($lowerRefCols, ['mothername', 'mname', 'mothersname']);
             } elseif (in_array($clean, ['SESSION', 'EXAM_SESSION', 'BATCH'])) {
-                $source = $this->matchFirstRefCol($lowerRefCols, ['examsession', 'session', 'batch']);
+                $source = $this->matchFirstRefCol($lowerRefCols, ['session', 'examsession', 'batch']);
             } elseif (in_array($clean, ['SEM', 'SEMESTER'])) {
                 $source = $this->matchFirstRefCol($lowerRefCols, ['semester', 'sem']);
             } elseif (in_array($clean, ['ACADEMIC_COURSE_ID', 'COURSE_CODE'])) {
@@ -640,24 +654,43 @@ class MappingController extends Controller
                 $subIdx = $matches[1];
                 $subSuffix = $matches[2];
 
-                $matchedCol = match ($subSuffix) {
-                    '', '_CODE' => $this->findRefColName($lowerRefCols, ['subjectcode', 'subcode', 'papercode', 'code']),
-                    'NM', '_NAME' => $this->findRefColName($lowerRefCols, ['subjectname', 'papername', 'subname', 'subjectcode', 'subcode']),
-                    '_TH_MAX' => $this->findRefColName($lowerRefCols, ['externalmarks', 'thmax', 'theorymax']),
-                    '_CE_MAX' => $this->findRefColName($lowerRefCols, ['internalmarks', 'cemax', 'intmax', 'cce']),
-                    '_TOT_MAX' => $this->findRefColName($lowerRefCols, ['totalmarks', 'totmax', 'maxmarks']),
-                    '_TH_MRKS' => $this->findRefColName($lowerRefCols, ['externalmarksobtained', 'thmarks', 'thobt', 'externalobtained']),
-                    '_CE_MRKS' => $this->findRefColName($lowerRefCols, ['internalmarksobtained', 'cemarks', 'ceobt', 'internalobtained']),
-                    '_TOT' => $this->findRefColName($lowerRefCols, ['marksobtained', 'totmarks', 'totalobtained', 'marks', 'tot']),
-                    '_GRADE' => $this->findRefColName($lowerRefCols, ['gradeobtained', 'grade', 'subgrade']),
-                    '_GRADE_POINTS' => $this->findRefColName($lowerRefCols, ['gradepoint', 'gradepoints', 'gp']),
-                    '_CREDIT' => $this->findRefColName($lowerRefCols, ['subjectcredit', 'credit', 'credits']),
-                    '_CREDIT_POINTS' => $this->findRefColName($lowerRefCols, ['creditpoint', 'creditpoints', 'cp']),
+                // Check if direct TR sheet column exists in reference table
+                $trColKey = match ($subSuffix) {
+                    '', '_CODE' => "sub{$subIdx}code",
+                    'NM', '_NAME' => "sub{$subIdx}name",
+                    '_TH_MAX' => "sub{$subIdx}fullmarks",
+                    '_TH_MRKS' => "sub{$subIdx}ese",
+                    '_CE_MRKS' => "sub{$subIdx}sie",
+                    '_TOT' => "sub{$subIdx}tot",
+                    '_GRADE' => "sub{$subIdx}grade",
+                    '_GRADE_POINTS' => "sub{$subIdx}points",
+                    '_CREDIT' => "sub{$subIdx}credit",
+                    '_CREDIT_POINTS' => "sub{$subIdx}creditpoints",
                     default => null,
                 };
 
-                if ($matchedCol) {
-                    $source = "sub_{$subIdx}:{$matchedCol}";
+                if ($trColKey && isset($lowerRefCols[$trColKey])) {
+                    $source = "ref:" . $lowerRefCols[$trColKey];
+                } else {
+                    $matchedCol = match ($subSuffix) {
+                        '', '_CODE' => $this->findRefColName($lowerRefCols, ['subjectcode', 'subcode', 'papercode', 'code']),
+                        'NM', '_NAME' => $this->findRefColName($lowerRefCols, ['subjectname', 'papername', 'subname', 'subjectcode', 'subcode']),
+                        '_TH_MAX' => $this->findRefColName($lowerRefCols, ['externalmarks', 'thmax', 'theorymax']),
+                        '_CE_MAX' => $this->findRefColName($lowerRefCols, ['internalmarks', 'cemax', 'intmax', 'cce']),
+                        '_TOT_MAX' => $this->findRefColName($lowerRefCols, ['totalmarks', 'totmax', 'maxmarks']),
+                        '_TH_MRKS' => $this->findRefColName($lowerRefCols, ['externalmarksobtained', 'thmarks', 'thobt', 'externalobtained']),
+                        '_CE_MRKS' => $this->findRefColName($lowerRefCols, ['internalmarksobtained', 'cemarks', 'ceobt', 'internalobtained']),
+                        '_TOT' => $this->findRefColName($lowerRefCols, ['marksobtained', 'totmarks', 'totalobtained', 'marks', 'tot']),
+                        '_GRADE' => $this->findRefColName($lowerRefCols, ['gradeobtained', 'grade', 'subgrade']),
+                        '_GRADE_POINTS' => $this->findRefColName($lowerRefCols, ['gradepoint', 'gradepoints', 'gp']),
+                        '_CREDIT' => $this->findRefColName($lowerRefCols, ['subjectcredit', 'credit', 'credits']),
+                        '_CREDIT_POINTS' => $this->findRefColName($lowerRefCols, ['creditpoint', 'creditpoints', 'cp']),
+                        default => null,
+                    };
+
+                    if ($matchedCol) {
+                        $source = "sub_{$subIdx}:{$matchedCol}";
+                    }
                 }
             }
 

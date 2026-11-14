@@ -9,6 +9,7 @@ Route::get('/', [MarksheetController::class, 'index'])->name('marksheets.index')
 Route::post('/upload', [MarksheetController::class, 'upload'])->name('marksheets.upload');
 Route::post('/refresh', [MarksheetController::class, 'refresh'])->name('marksheets.refresh');
 Route::post('/set-student-column', [MarksheetController::class, 'setStudentColumn'])->name('marksheets.setStudentColumn');
+Route::post('/switch-tr-semester', [MarksheetController::class, 'switchTrSemester'])->name('marksheets.switchTrSemester');
 
 // Mapping Workspace & Export
 Route::get('/mapping', [MappingController::class, 'index'])->name('mapping.index');

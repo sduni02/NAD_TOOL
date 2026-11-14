@@ -3,12 +3,21 @@
 namespace App\Http\Controllers;
 
 use App\Models\ReferenceRecord;
+use App\Services\TrSheetParser;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use PhpOffice\PhpSpreadsheet\IOFactory;
 
 class MarksheetController extends Controller
 {
+    protected TrSheetParser $trParser;
+
+    public function __construct(TrSheetParser $trParser)
+    {
+        $this->trParser = $trParser;
+    }
+
     /**
      * Show main dashboard with dynamic table preview and stats.
      */
@@ -23,6 +32,14 @@ class MarksheetController extends Controller
         // Student ID column
         $studentIdCol = DB::table('reference_metadata')->where('key', 'student_id_column')->value('value');
         $totalStudents = ReferenceRecord::whereNotNull('student_key')->distinct('student_key')->count('student_key');
+
+        // TR Sheet Metadata (if applicable)
+        $isTrSheet = DB::table('reference_metadata')->where('key', 'is_tr_sheet')->value('value') === '1';
+        $activeTrSemester = DB::table('reference_metadata')->where('key', 'active_tr_semester')->value('value');
+        $availableTrSemestersJson = DB::table('reference_metadata')->where('key', 'tr_available_semesters')->value('value');
+        $availableTrSemesters = $availableTrSemestersJson ? json_decode($availableTrSemestersJson, true) : [];
+        $trCourse = DB::table('reference_metadata')->where('key', 'tr_course')->value('value');
+        $trSession = DB::table('reference_metadata')->where('key', 'tr_session')->value('value');
 
         $search = $request->input('search');
         $query = ReferenceRecord::query();
@@ -42,12 +59,17 @@ class MarksheetController extends Controller
             'columns',
             'studentIdCol',
             'records',
-            'search'
+            'search',
+            'isTrSheet',
+            'activeTrSemester',
+            'availableTrSemesters',
+            'trCourse',
+            'trSession'
         ));
     }
 
     /**
-     * Upload CSV or Excel file with ANY number of columns.
+     * Upload CSV or Excel file (Standard or T.R. Sheet).
      */
     public function upload(Request $request)
     {
@@ -71,6 +93,56 @@ class MarksheetController extends Controller
             ReferenceRecord::truncate();
             DB::table('reference_metadata')->truncate();
 
+            // Check if this is a Tabulation Register (T.R.) Sheet
+            if ($this->trParser->isTrSheet($filePath)) {
+                // Save file locally for semester switching
+                $storedPath = storage_path('app/tr_current.' . $extension);
+                @copy($filePath, $storedPath);
+
+                $semesters = $this->trParser->getAvailableSemesters($filePath);
+                $targetSem = $request->input('tr_semester') ?? ($semesters[0]['key'] ?? null);
+
+                $parsed = $this->trParser->parseSemester($filePath, $targetSem);
+
+                // Insert student records
+                $batch = [];
+                $now = now();
+                foreach ($parsed['records'] as $recData) {
+                    $studentKey = $recData['Roll_No'] ?: ($recData['Reg_No'] ?: null);
+                    $batch[] = [
+                        'student_key' => $studentKey,
+                        'row_data' => json_encode($recData, JSON_UNESCAPED_UNICODE),
+                        'created_at' => $now,
+                        'updated_at' => $now,
+                    ];
+                }
+
+                if (!empty($batch)) {
+                    ReferenceRecord::insert($batch);
+                }
+
+                // Metadata
+                DB::table('reference_metadata')->insert([
+                    ['key' => 'is_tr_sheet', 'value' => '1', 'created_at' => $now, 'updated_at' => $now],
+                    ['key' => 'tr_file_path', 'value' => $storedPath, 'created_at' => $now, 'updated_at' => $now],
+                    ['key' => 'active_tr_semester', 'value' => $parsed['semester'], 'created_at' => $now, 'updated_at' => $now],
+                    ['key' => 'tr_available_semesters', 'value' => json_encode($semesters, JSON_UNESCAPED_UNICODE), 'created_at' => $now, 'updated_at' => $now],
+                    ['key' => 'tr_course', 'value' => $parsed['course'], 'created_at' => $now, 'updated_at' => $now],
+                    ['key' => 'tr_session', 'value' => $parsed['session'], 'created_at' => $now, 'updated_at' => $now],
+                    ['key' => 'columns', 'value' => json_encode($parsed['columns'], JSON_UNESCAPED_UNICODE), 'created_at' => $now, 'updated_at' => $now],
+                    ['key' => 'student_id_column', 'value' => 'Roll_No', 'created_at' => $now, 'updated_at' => $now],
+                    ['key' => 'original_filename', 'value' => $file->getClientOriginalName(), 'created_at' => $now, 'updated_at' => $now],
+                ]);
+
+                DB::commit();
+
+                $semCount = count($semesters);
+                $stCount = count($parsed['records']);
+                return redirect()->route('marksheets.index')
+                    ->with('success', "T.R. Sheet Detected! Loaded {$stCount} students for '{$parsed['semester']}' ({$semCount} semesters available).");
+            }
+
+            // Standard CSV / Excel import
             if (in_array($extension, ['csv', 'txt'])) {
                 $result = $this->importDynamicCsv($filePath);
             } else {
@@ -79,6 +151,7 @@ class MarksheetController extends Controller
 
             // Save detected columns and student ID column
             DB::table('reference_metadata')->insert([
+                ['key' => 'is_tr_sheet', 'value' => '0', 'created_at' => now(), 'updated_at' => now()],
                 ['key' => 'columns', 'value' => json_encode($result['columns'], JSON_UNESCAPED_UNICODE), 'created_at' => now(), 'updated_at' => now()],
                 ['key' => 'student_id_column', 'value' => $result['student_id_col'], 'created_at' => now(), 'updated_at' => now()],
                 ['key' => 'original_filename', 'value' => $file->getClientOriginalName(), 'created_at' => now(), 'updated_at' => now()],
@@ -92,6 +165,63 @@ class MarksheetController extends Controller
         } catch (\Throwable $e) {
             DB::rollBack();
             return back()->with('error', 'Failed to import file: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Switch active semester for a loaded TR Sheet.
+     */
+    public function switchTrSemester(Request $request)
+    {
+        $targetSem = $request->input('semester');
+        $storedPath = DB::table('reference_metadata')->where('key', 'tr_file_path')->value('value');
+
+        if (!$storedPath || !file_exists($storedPath)) {
+            return back()->with('error', 'Original TR Sheet file not found. Please re-upload the file.');
+        }
+
+        try {
+            DB::beginTransaction();
+
+            ReferenceRecord::truncate();
+
+            $parsed = $this->trParser->parseSemester($storedPath, $targetSem);
+
+            $batch = [];
+            $now = now();
+            foreach ($parsed['records'] as $recData) {
+                $studentKey = $recData['Roll_No'] ?: ($recData['Reg_No'] ?: null);
+                $batch[] = [
+                    'student_key' => $studentKey,
+                    'row_data' => json_encode($recData, JSON_UNESCAPED_UNICODE),
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ];
+            }
+
+            if (!empty($batch)) {
+                ReferenceRecord::insert($batch);
+            }
+
+            DB::table('reference_metadata')->updateOrInsert(
+                ['key' => 'active_tr_semester'],
+                ['value' => $parsed['semester'], 'updated_at' => $now]
+            );
+
+            DB::table('reference_metadata')->updateOrInsert(
+                ['key' => 'columns'],
+                ['value' => json_encode($parsed['columns'], JSON_UNESCAPED_UNICODE), 'updated_at' => $now]
+            );
+
+            session()->forget(['mapping_config']);
+
+            DB::commit();
+
+            return redirect()->route('marksheets.index')
+                ->with('success', "Switched database to '{$parsed['semester']}' (" . count($parsed['records']) . " students loaded).");
+        } catch (\Throwable $e) {
+            DB::rollBack();
+            return back()->with('error', 'Failed to switch semester: ' . $e->getMessage());
         }
     }
 
@@ -110,7 +240,6 @@ class MarksheetController extends Controller
             ['value' => $col, 'updated_at' => now()]
         );
 
-        // Update student_key for all rows
         $records = ReferenceRecord::all();
         foreach ($records as $rec) {
             $data = $rec->row_data;
@@ -129,11 +258,15 @@ class MarksheetController extends Controller
     {
         try {
             ReferenceRecord::truncate();
+            $storedPath = DB::table('reference_metadata')->where('key', 'tr_file_path')->value('value');
+            if ($storedPath && file_exists($storedPath)) {
+                @unlink($storedPath);
+            }
             DB::table('reference_metadata')->truncate();
             session()->forget(['target_headers', 'mapping_config']);
 
             return redirect()->route('marksheets.index')
-                ->with('success', 'Database cleared successfully! You can now upload a new CSV/Excel file with any column format.');
+                ->with('success', 'Database cleared successfully! All reference records and semester data removed.');
         } catch (\Throwable $e) {
             return back()->with('error', 'Failed to clear database: ' . $e->getMessage());
         }
@@ -149,7 +282,6 @@ class MarksheetController extends Controller
             throw new \Exception('Could not open CSV file.');
         }
 
-        // Check BOM
         $bom = fread($handle, 3);
         if ($bom !== "\xEF\xBB\xBF") {
             rewind($handle);
@@ -276,7 +408,7 @@ class MarksheetController extends Controller
     }
 
     /**
-     * Clean and preserve headers, deduplicating if needed.
+     * Clean and preserve headers.
      */
     private function sanitizeHeaders(array $rawHeaders): array
     {
@@ -289,7 +421,6 @@ class MarksheetController extends Controller
                 $name = 'Column_' . ($i + 1);
             }
 
-            // Deduplicate if identical header names exist
             if (isset($seen[$name])) {
                 $seen[$name]++;
                 $name = $name . '_' . $seen[$name];
@@ -326,7 +457,6 @@ class MarksheetController extends Controller
             }
         }
 
-        // Fallback to first column
         return $columns[0] ?? null;
     }
 }

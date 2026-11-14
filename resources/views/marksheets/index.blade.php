@@ -181,6 +181,46 @@
             </form>
         </div>
 
+        @if($isTrSheet && !empty($availableTrSemesters))
+        <!-- TR Sheet Semester Switcher Panel -->
+        <div class="bg-gradient-to-r from-purple-900 to-indigo-900 text-white rounded-2xl p-5 shadow-lg space-y-4">
+            <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-indigo-700/60 pb-3">
+                <div class="flex items-center space-x-3">
+                    <div class="w-10 h-10 rounded-xl bg-purple-500/20 text-purple-300 flex items-center justify-center text-lg border border-purple-400/30">
+                        <i class="fa-solid fa-graduation-cap"></i>
+                    </div>
+                    <div>
+                        <div class="flex items-center space-x-2">
+                            <span class="text-xs uppercase tracking-wider font-bold text-purple-300">Tabulated Result (T.R.) Active</span>
+                            <span class="px-2 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-semibold">{{ $activeTrSemester }}</span>
+                        </div>
+                        <h3 class="text-base font-bold text-white">{{ $trCourse ?: 'Academic Course' }} &bull; <span class="text-indigo-200 font-normal">Session {{ $trSession ?: 'N/A' }}</span></h3>
+                    </div>
+                </div>
+
+                <div class="text-xs text-indigo-300">
+                    <i class="fa-solid fa-layer-group mr-1"></i> {{ count($availableTrSemesters) }} Semesters in this file
+                </div>
+            </div>
+
+            <div>
+                <span class="text-xs font-semibold text-indigo-200 block mb-2">Switch Active Semester:</span>
+                <div class="flex flex-wrap gap-2">
+                    @foreach($availableTrSemesters as $sem)
+                        <form action="{{ route('marksheets.switchTrSemester') }}" method="POST" class="inline">
+                            @csrf
+                            <input type="hidden" name="semester" value="{{ $sem['key'] }}">
+                            <button type="submit" class="px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center space-x-1.5 {{ $activeTrSemester === $sem['key'] ? 'bg-white text-indigo-950 shadow-md ring-2 ring-indigo-400' : 'bg-indigo-800/80 hover:bg-indigo-700 text-indigo-100 hover:text-white border border-indigo-700' }}">
+                                <i class="fa-solid {{ $activeTrSemester === $sem['key'] ? 'fa-circle-check text-emerald-600' : 'fa-circle text-indigo-400/60 text-[10px]' }}"></i>
+                                <span>{{ $sem['label'] }}</span>
+                            </button>
+                        </form>
+                    @endforeach
+                </div>
+            </div>
+        </div>
+        @endif
+
         @if(!empty($columns))
         <!-- Student Identifier Column Switcher -->
         <div class="bg-indigo-50/70 border border-indigo-200 rounded-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-4">
